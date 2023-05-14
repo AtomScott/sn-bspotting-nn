@@ -240,7 +240,12 @@ def objective(trial):
 
 def hpo(args):
     # Define a study and optimize the objective function
-    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study_name = "example-study"  # Unique identifier of the study.
+    storage_name = "sqlite:///{}.db".format(study_name)
+
+    study = optuna.create_study(
+        direction="minimize", pruner=optuna.pruners.MedianPruner(), study_name=study_name, storage=storage_name
+    )
     study.optimize(objective, n_trials=100)
 
     print("Best trial:")
