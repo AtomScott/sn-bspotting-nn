@@ -5,10 +5,49 @@ import optuna
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datamodule import SoccerActionDataModule
 from optuna.integration import PyTorchLightningPruningCallback
-from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, StochasticWeightAveraging
+from pytorch_lightning.loggers import WandbLogger
+
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, alpha=1, gamma=2, logits=False, reduce=True):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.logits = logits
+        self.reduce = reduce
+
+    def forward(self, inputs, targets):
+        if self.logits:
+            BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduce=False)
+        else:
+            BCE_loss = F.binary_cross_entropy(inputs, targets, reduce=False)
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
+
+        if self.reduce:
+            return torch.mean(F_loss)
+        else:
+            return F_loss
+
+
+class ArcFaceLoss(nn.Module):
+    def __init__(self, s=30.0, m=0.50, easy_margin=False):
+        super(ArcFaceLoss, self).__init__()
+        self.s = s
+        self.m = m
+
+    def forward(self, logits, labels):
+        cosine = F.linear(F.normalize(logits), F.normalize(labels))
+        sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        labels = labels.view(-1, 1)
+        output = (labels * phi) + ((1.0 - labels) * cosine)
+        output *= self.s
+        return output
 
 
 class LSTMModel(nn.Module):
@@ -94,6 +133,7 @@ class SoccerActionSpotter(pl.LightningModule):
         self.model = model
         self.learning_rate = learning_rate
         self.save_hyperparameters()
+        self.loss_function = FocalLoss()
 
     def step(self, batch, mode="train"):
         x, y = batch
@@ -102,7 +142,7 @@ class SoccerActionSpotter(pl.LightningModule):
 
         # Calculate accuracy
         y_hat_classes = torch.argmax(y_hat, dim=-1)  # get the predicted classes
-        y_classes = y  # true classes
+        y_classes = torch.argmax(y, dim=-1)  # true classes
         correct = (y_hat_classes == y_classes).float()  # convert into float for division
         accuracy = correct.sum() / torch.numel(correct)  # divide by the number of elements in y
 
@@ -133,9 +173,7 @@ class SoccerActionSpotter(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def loss(self, logits, labels):
-        logits = logits.view(-1, logits.size(-1))  # flatten the batch and sequence dimensions
-        labels = labels.view(-1)  # flatten the batch and sequence dimensions
-        return nn.CrossEntropyLoss()(logits, labels)
+        return self.loss_function(logits, labels)
 
 
 def parse_args():
@@ -144,7 +182,7 @@ def parse_args():
     parser.add_argument("--train", action="store_true", help="Train the model")
     parser.add_argument("--test", action="store_true", help="Test the model")
     parser.add_argument("--hpo", action="store_true", help="Run hyperparameter optimization")
-    parser.add_argument("--data_dir", type=str, default="sim_data", help="Path to the dataset directory")
+    parser.add_argument("--data_dir", type=str, default="data", help="Path to the dataset directory")
     parser.add_argument("--window_size", type=int, default=4, help="Window size for the sequences")
     parser.add_argument("--step_size", type=int, default=1, help="Step size for the sequences")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for data loading")

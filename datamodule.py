@@ -50,7 +50,7 @@ class SoccerActionDataset(Dataset):
 
         # Convert to PyTorch tensors
         features = torch.from_numpy(features).float()
-        labels = torch.from_numpy(labels).long()
+        labels = torch.from_numpy(labels).float()
 
         if self.transform:
             features, labels = self.transform(features, labels)
@@ -81,10 +81,10 @@ class SoccerActionDataModule(pl.LightningDataModule):
     def prepare_data(self):
         # Index the data instead of loading it
         self.data = {}
-        for split in ["train", "valid", "test"]:
+        for split in ["train", "val", "test"]:
             split_dir = os.path.join(self.data_dir, split)
-            feature_files = sorted([f for f in os.listdir(split_dir) if f.startswith("features")])
-            label_files = sorted([f for f in os.listdir(split_dir) if f.startswith("labels")])
+            feature_files = sorted([f for f in os.listdir(split_dir) if f.endswith("features.npy")])
+            label_files = sorted([f for f in os.listdir(split_dir) if f.endswith("labels.npy")])
             self.data[split] = []
             for f, l in zip(feature_files, label_files):
                 labels_path = os.path.join(split_dir, l)
@@ -94,7 +94,7 @@ class SoccerActionDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
             self.train_dataset = SoccerActionDataset(self.data["train"], self.window_size, self.step_size)
-            self.valid_dataset = SoccerActionDataset(self.data["valid"], self.window_size, self.step_size)
+            self.valid_dataset = SoccerActionDataset(self.data["val"], self.window_size, self.step_size)
 
         if stage == "test" or stage is None:
             self.test_dataset = SoccerActionDataset(self.data["test"], self.window_size, self.step_size)
@@ -110,7 +110,7 @@ class SoccerActionDataModule(pl.LightningDataModule):
 
 
 if __name__ == "__main__":
-    data_dir = "sim_data"
+    data_dir = "data"
     batch_size = 8
     window_size = 16
     step_size = 1
