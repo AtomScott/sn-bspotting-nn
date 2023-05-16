@@ -1,5 +1,5 @@
 import argparse
-
+import math
 import numpy as np
 import optuna
 import pytorch_lightning as pl
@@ -51,69 +51,127 @@ class ArcFaceLoss(nn.Module):
 
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3):
+    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, dropout=0.5):
         super().__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=3)
-        self.fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.fc2 = nn.Linear(hidden_dim // 2, output_dim)
-
-    def forward(self, x):
-        output, _ = self.lstm(x)  # output shape is (batch_size, sequence_length, hidden_dim)
-        x = self.fc1(output)  # apply the linear layer to each time step
-        x = torch.relu(x)
-        x = self.fc2(x)
-        return x  # x is now of shape (batch_size, sequence_length, output_dim)
-
-
-class FCModel(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, num_layers=3, bidirectional=True)
+        self.dropout = nn.Dropout(dropout)
+        self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-        x = x.view(x.size(0), -1)  # Flatten the input
-        x = torch.relu(self.fc1(x))
+        output, _ = self.lstm(x)  # output shape is (batch_size, sequence_length, hidden_dim * 2)
+        output = self.dropout(output)
+        x = self.fc1(output)  # apply the linear layer to each time step
+        x = torch.relu(x)
+        x = self.dropout(x)
         x = self.fc2(x)
-        return x
+        x = torch.sigmoid(x)
+        return x  # x is now of shape (batch_size, sequence_length, output_dim)
+
+# class FCModel(nn.Module):
+#     def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, dropout=0.5):
+#         super().__init__()
+#         self.fc1 = nn.Linear(input_dim, hidden_dim)
+#         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
+#         self.fc3 = nn.Linear(hidden_dim // 2, hidden_dim // 4)
+#         self.fc4 = nn.Linear(hidden_dim // 4, output_dim)
+#         self.dropout = nn.Dropout(dropout)
+#         self.activation = nn.LeakyReLU()
+
+#     def forward(self, x):
+#         x = x.view(x.size(0), -1)  # Flatten the input
+#         x = self.activation(self.fc1(x))
+#         x = self.dropout(x)
+#         x = self.activation(self.fc2(x))
+#         x = self.dropout(x)
+#         x = self.activation(self.fc3(x))
+#         x = self.dropout(x)
+#         x = self.fc4(x)
+#         x = torch.sigmoid(x)
+#         return x
 
 
-class GRUModel(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3):
-        super().__init__()
-        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+# class GRUModel(nn.Module):
+#     def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, dropout=0.5):
+#         super().__init__()
+#         self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True, bidirectional=True)
+#         self.dropout = nn.Dropout(dropout)
+#         self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim // 2)
+#         self.fc2 = nn.Linear(hidden_dim // 2, output_dim)
 
-    def forward(self, x):
-        output, _ = self.gru(x)
-        x = self.fc(output)
-        return x
-
+#     def forward(self, x):
+#         output, _ = self.gru(x)  # output shape is (batch_size, sequence_length, hidden_dim * 2)
+#         output = self.dropout(output)
+#         x = torch.relu(x)
+#         x = self.dropout(x)
+#         x = self.fc2(x)
+#         x = torch.sigmoid(x)
+#         return x  # x is now of shape (batch_size, sequence_length, output_dim)
 
 class Conv1DModel(nn.Module):
     def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, kernel_size=3):
         super().__init__()
-        self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size)
+        self.conv1 = nn.Conv1d(input_dim, hidden_dim, kernel_size, padding='same')
+        self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size, padding='same')
+        self.conv3 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size, padding='same')
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
+        # x is B x L x C whereas conv1d expects B x C x L
+        x = x.transpose(1, 2)
+        
         x = self.conv1(x)
-        x = x.view(x.size(0), -1)  # Flatten the output
+        x = torch.relu(x)
+        x = self.conv2(x)
+        x = torch.relu(x)
+        x = self.conv3(x)
+        x = torch.relu(x)
+        
+        # Convert back to B x L x C
+        x = x.transpose(1, 2)
+        
         x = self.fc(x)
+        x = torch.sigmoid(x)
+        
         return x
 
 
-class TransformerModel(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, num_heads=4):
-        super().__init__()
-        self.transformer = nn.Transformer(input_dim, num_heads)
-        self.fc = nn.Linear(input_dim, output_dim)
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = self.transformer(x)
-        x = self.fc(x)
-        return x
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
 
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim=784, hidden_dim=256, output_dim=3, num_heads=4, dropout=0.5, num_layers=1):
+        super().__init__()
+        self.pos_encoder = PositionalEncoding(input_dim, dropout)
+        encoder_layer = nn.TransformerEncoderLayer(input_dim, num_heads, hidden_dim, dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.layer_norm = nn.LayerNorm(input_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(input_dim, output_dim)
+
+    def forward(self, src):
+        src = self.pos_encoder(src)
+        x = self.transformer_encoder(src)
+        x = self.layer_norm(x)
+        x = self.dropout(x)
+        x = self.fc(x)
+        x = torch.sigmoid(x)
+        return x
 
 class SoccerActionSpotter(pl.LightningModule):
     def __init__(self, model_type, input_dim=784, hidden_dim=256, output_dim=3, learning_rate=0.001):
@@ -206,7 +264,8 @@ def parse_args():
 
 def train(args):
     # Initialize TensorBoard logger
-    wandb_logger = WandbLogger(save_dir="logs/", project="sn-bspotting")
+    name = f"{args.model_type}_{args.window_size}_{args.step_size}_{args.batch_size}_{args.learning_rate}"
+    wandb_logger = WandbLogger(name=name, save_dir="logs/", project="sn-bspotting")
 
     # Initialize a model checkpoint callback
     checkpoint_callback = ModelCheckpoint(monitor="val_loss")
@@ -242,16 +301,20 @@ def test(args):
 
 def objective(trial):
     # Suggest values for the hyperparameters
-    hidden_dim = trial.suggest_int("hidden_dim", 64, 512)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
-    window_size = trial.suggest_int("window_size", 1, 10)
-    step_size = trial.suggest_int("step_size", 1, 5)
-
+    window_size = trial.suggest_int("window_size", 1, 256, log=True)
+    step_size = trial.suggest_int("step_size", 1, window_size, log=True)
+    hidden_dim = trial.suggest_int("hidden_dim", 1, 512, log=True)
+    batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64, 128, 256, 512])
+    model_type = trial.suggest_categorical("model_type", ["LSTM", "Conv1D", "Transformer"])
+    
     # Initialize the model
-    model = SoccerActionSpotter(args.model_type, args.input_dim, hidden_dim, args.output_dim, learning_rate)
+    model = SoccerActionSpotter(model_type, args.input_dim, hidden_dim, args.output_dim, learning_rate)
 
     # Initialize callbacks
-    wandb_logger = WandbLogger("logs/", project="sn-bspotting")
+    name = f"{model_type}_{window_size}_{step_size}_{batch_size}_{learning_rate:.1g}_{hidden_dim}"
+    wandb_logger = WandbLogger(name=name, save_dir="logs/", project="sn-bspotting")
+
     checkpoint_callback = ModelCheckpoint(monitor="val_loss")
     lr_monitor = LearningRateMonitor(logging_interval="step")
     swa_callback = StochasticWeightAveraging(swa_lrs=learning_rate, swa_epoch_start=args.swa_epoch_start)
@@ -267,7 +330,7 @@ def objective(trial):
     )
 
     # Initialize the data module
-    datamodule = SoccerActionDataModule(args.data_dir, window_size, step_size, args.batch_size)
+    datamodule = SoccerActionDataModule(args.data_dir, window_size, step_size, batch_size)
 
     # Fit the model
     trainer.fit(model, datamodule=datamodule)
@@ -278,13 +341,13 @@ def objective(trial):
 
 def hpo(args):
     # Define a study and optimize the objective function
-    study_name = "example-study"  # Unique identifier of the study.
+    study_name = "hpo_lstm_conv1d_transformer"  # Unique identifier of the study.
     storage_name = "sqlite:///{}.db".format(study_name)
 
     study = optuna.create_study(
-        direction="minimize", pruner=optuna.pruners.MedianPruner(), study_name=study_name, storage=storage_name
+        direction="minimize", pruner=optuna.pruners.MedianPruner(), study_name=study_name, storage=storage_name, load_if_exists=True
     )
-    study.optimize(objective, n_trials=100)
+    study.optimize(objective, n_trials=1)
 
     print("Best trial:")
     trial_ = study.best_trial
